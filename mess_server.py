@@ -1,57 +1,61 @@
 import socket
-from threading import Thread
+from threading import Thread, Lock
 
-
-hostname = socket.gethostname()
-local_ip = socket.gethostbyname(hostname)
 
 local_port = int(input('Enter your port number: '))
-print(local_ip)
-
 
 socket_clients = set()
+clients_lock = Lock()
+
 suck = socket.socket()
-suck.bind((local_ip, local_port))
-
+suck.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+suck.bind(('0.0.0.0', local_port))
 suck.listen(5)
+print(f'Server listening on port {local_port}')
 
 
-def listen(client):
-    while True:
+def broadcast(mess, sender):
+    data = (mess + '\n').encode()
+    with clients_lock:
+        clients = list(socket_clients)
+    for client in clients:
+        if client is sender:
+            continue
         try:
-            mess = suck.recv(1024).decode()
-        except Exception as e:
-            socket_clients.remove(client)
-            print(f'{socket_client} leave')
-        else:
-            for client in socket_clients:
-                suck.send(mess.encode())
+            client.sendall(data)
+        except OSError:
+            pass
 
 
+def listen(client, address):
+    # Each message is one line, so recv() splitting a message
+    # (or a multibyte UTF-8 character) does not matter
+    reader = client.makefile('r', encoding='utf-8', errors='replace')
+    try:
+        for line in reader:
+            mess = line.rstrip('\n')
+            if mess:
+                broadcast(mess, client)
+    except OSError:
+        pass
+    finally:
+        with clients_lock:
+            socket_clients.discard(client)
+        reader.close()
+        client.close()
+        print(f'{address} leave')
 
 
-while True:
-    socket_client,address = suck.accept()
-    socket_clients.add(socket_client)
-    print(f'{address} connected')
-    t = Thread(target=listen, args=(socket_client,))
-    t.daemon = True
-    t.start()
-    if len(socket_clients) == 0:
-        break
-
-suck.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+try:
+    while True:
+        socket_client, address = suck.accept()
+        with clients_lock:
+            socket_clients.add(socket_client)
+        print(f'{address} connected')
+        t = Thread(target=listen, args=(socket_client, address))
+        t.daemon = True
+        t.start()
+except KeyboardInterrupt:
+    pass
+finally:
+    suck.close()
